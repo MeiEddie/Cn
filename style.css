@@ -18,6 +18,7 @@
         justify-content: center;
         user-select: none;
         -webkit-user-select: none;
+        -webkit-touch-callout: none;
     }
     #app {
         width: 100%; max-width: 460px; height: 100%;
@@ -61,22 +62,53 @@
         color: var(--ink);
     }
     #sndBtn.off { opacity: .45; text-decoration: line-through; }
-    .hud {
-        display: flex; gap: 8px; padding: 8px 2px 4px;
+    /* ---------- 顶部结果条：每炮判定实时上屏 ---------- */
+    #resultBar {
+        display: flex; align-items: center; gap: 10px;
+        margin: 8px 2px 4px;
+        background: #fff;
+        border: 2.5px solid var(--ink);
+        border-radius: 12px;
+        padding: 6px 12px 7px;
+        box-shadow: 0 3px 0 rgba(58,52,44,.12);
     }
-    .hud .chip {
-        flex: 1;
+    #resultBar .r-icon {
+        flex: 0 0 auto;
+        width: 26px; height: 26px;
+        border-radius: 50%;
+        border: 2.5px solid var(--ink);
+        background: #fff;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 13px; font-weight: bold; color: var(--ink);
+    }
+    #resultBar .r-text { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+    #resultBar b { font-size: 17px; line-height: 1.1; white-space: nowrap; }
+    #resultBar i {
+        font-style: normal; font-size: 11px; color: var(--ink-soft);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #resultBar.res-light .r-icon { background: var(--yellow); }
+    #resultBar.res-hot .r-icon { background: var(--orange); color: #FAF4E8; }
+    #resultBar.res-hot b { color: var(--orange); }
+    #resultBar.res-ok .r-icon { background: var(--green); color: #FAF4E8; }
+    #resultBar.res-ok b { color: var(--green); }
+
+    /* ---------- 实验区左下角：还活着计数 ---------- */
+    #aliveBox {
+        position: absolute;
+        left: 10px; bottom: 10px;
         background: #fff;
         border: 2.5px solid var(--ink);
         border-radius: 12px;
         text-align: center;
-        padding: 5px 0 6px;
+        padding: 4px 10px 5px;
+        z-index: 6;
         box-shadow: 0 3px 0 rgba(58,52,44,.12);
+        transition: opacity .3s;
     }
-    .hud b { display: block; font-size: 20px; line-height: 1.1; }
-    .hud i { font-style: normal; font-size: 11px; color: var(--ink-soft); }
-    .hud .chip:nth-child(2) b { color: var(--orange); }
-    .hud .chip:nth-child(3) b { color: var(--green); }
+    #aliveBox b { display: block; font-size: 19px; line-height: 1.1; color: var(--green); }
+    #aliveBox i { font-style: normal; font-size: 10px; color: var(--ink-soft); }
+    #aliveBox.zero { opacity: .45; }
 
     /* ---------- 实验区 ---------- */
     #arena {
@@ -196,13 +228,21 @@
         align-items: center; justify-content: center;
         font-weight: bold; font-size: 13px;
         z-index: 2;
-        box-shadow: 0 0 0 0 rgba(47,107,94,.35);
-        animation: glowPulse 1s infinite;
     }
     .live-cn small { font-size: 8px; font-weight: normal; opacity: .85; }
+    /* 辉光改用伪元素的 transform/opacity 动画：走合成器，多颗原子同屏也不掉帧 */
+    .live-cn::after {
+        content: "";
+        position: absolute; inset: -4px;
+        border-radius: 50%;
+        border: 2.5px solid rgba(47,107,94,.55);
+        animation: glowPulse 1s infinite;
+        pointer-events: none;
+    }
     @keyframes glowPulse {
-        0%, 100% { box-shadow: 0 0 0 0 rgba(47,107,94,.30); }
-        50% { box-shadow: 0 0 0 8px rgba(47,107,94,0); }
+        0% { transform: scale(.88); opacity: .85; }
+        70% { transform: scale(1.5); opacity: 0; }
+        100% { transform: scale(1.5); opacity: 0; }
     }
     .live-cn .ring {
         position: absolute; inset: -8px;
@@ -227,9 +267,11 @@
     }
     #meterFill {
         position: absolute; left: 0; right: 0; bottom: 0;
-        height: 0%;
+        height: 100%;
         background: var(--yellow);
-        transition: height .04s linear;
+        transform: scaleY(0);
+        transform-origin: bottom;
+        transition: transform .04s linear;
     }
     #meterFill.hot { background: var(--orange); }
     #meterFill.ok { background: var(--green); }
@@ -266,27 +308,25 @@
         0%, 100% { transform: translateX(-50%) translateY(0); }
         50% { transform: translateX(-50%) translateY(-5px); }
     }
+    /* ---------- 解说便签：位于游戏区上方，不挡画面 ---------- */
     #note {
-        position: absolute;
-        left: 10px; right: 56px; top: 10px;
+        position: relative;
+        display: none;
+        overflow: hidden;
+        margin-top: 6px;
         background: #fff;
         border: 2.5px solid var(--ink);
         border-radius: 12px;
         padding: 8px 34px 8px 12px;
         font-size: 13px;
         line-height: 1.55;
-        z-index: 9;
         box-shadow: 0 4px 0 rgba(58,52,44,.12);
-        opacity: 0;
-        transition: opacity .3s, transform .3s;
-        transform: translateY(-6px);
-        pointer-events: none;
     }
-    #note.show { opacity: 1; transform: translateY(0); }
     #note b { color: var(--orange); }
     #note .close-x {
         position: absolute; top: 4px; right: 8px;
         color: var(--ink-soft); font-size: 12px;
+        cursor: pointer;
     }
 
     /* ---------- 便签（冷知识） ---------- */

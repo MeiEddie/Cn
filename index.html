@@ -19,12 +19,13 @@
             <span>112 号元素合成小实验</span>
             <button id="sndBtn">音效</button>
         </div>
-        <div class="hud">
-            <div class="chip"><b id="hudShot">0</b><i>轰击次数</i></div>
-            <div class="chip"><b id="hudMade">0</b><i>合成鿔原子</i></div>
-            <div class="chip"><b id="hudAlive">0</b><i>还活着</i></div>
+        <div id="resultBar">
+            <span class="r-icon" id="rIcon">·</span>
+            <span class="r-text"><b id="resultText">等待开炮</b><i id="resultSub">按住屏幕蓄力，松手开炮</i></span>
         </div>
     </header>
+
+    <div id="note"><span class="close-x" id="noteClose">收起</span><span id="noteText"></span></div>
 
     <div id="arena">
         <div class="nucleus" id="pb">
@@ -52,7 +53,7 @@
             <div id="meterFill"></div>
         </div>
 
-        <div id="note"><span class="close-x" id="noteClose">收起</span><span id="noteText"></span></div>
+        <div id="aliveBox"><b id="hudAlive">0</b><i>还活着</i></div>
         <div id="hint">按住屏幕蓄力，松手开炮</div>
     </div>
 
@@ -64,7 +65,24 @@
 (function () {
     "use strict";
 
-    /* ============ 配置区：想调手感，改这里就行 ============ */
+    /* ============ 数据兜底：data.js 加载失败/被单独拷走时，用内置默认值保证不白屏 ============ */
+    if (!window.GAME_DATA) window.GAME_DATA = {};
+    if (!window.GAME_DATA.CONFIG) window.GAME_DATA.CONFIG = {
+        windowSize: 7, windowCenterMin: 50, windowCenterMax: 70,
+        meterSpeed: 140, flightBase: 300, flightPerPow: 3.2,
+        cnLife: 6000, factChance: 0.5
+    };
+    if (!window.GAME_DATA.FACTS) window.GAME_DATA.FACTS = [
+        "鿔读 gè，名字来自天文学家哥白尼（Copernicus）。",
+        "锌是 30 号、铅是 82 号：30 + 82 = 112，正好凑出 112 号元素。"
+    ];
+    if (!window.GAME_DATA.MILESTONES) window.GAME_DATA.MILESTONES = {
+        1: "第 1 颗！你复现了 1996 年 GSI 团队的实验。",
+        3: "已经 3 颗。现实里平均要轰击上万次才出 1 个原子，你这台机器体面多了。",
+        5: "5 颗达成。宇宙里自然存在量为 0 的元素，现在有 5 颗出自你手。",
+        8: "8 颗！可以在朋友圈自称“人造元素炼金术士”了（并不建议）。"
+    };
+    /* 想调手感/难度：改 data.js 里的 GAME_DATA.CONFIG，这里不用动 */
 
 
     /* ============ 元素引用 ============ */
@@ -75,15 +93,18 @@
         meterFill = $("meterFill"), hint = $("hint"),
         note = $("note"), noteText = $("noteText"), noteClose = $("noteClose"),
         factText = $("factText"),
-        hudShot = $("hudShot"), hudMade = $("hudMade"), hudAlive = $("hudAlive"),
+        hudAlive = $("hudAlive"),
+        resultBar = $("resultBar"), rIcon = $("rIcon"),
+        resultText = $("resultText"), resultSub = $("resultSub"),
+        aliveBox = $("aliveBox"),
         sndBtn = $("sndBtn"),
         zoneLow = $("zoneLow"), zoneOk = $("zoneOk"), zoneHot = $("zoneHot");
 
     /* ============ 状态 ============ */
     var state = {
-        mode: "idle",       // idle | charging | flying | busy
+        mode: "idle",       // idle | charging | flying
         val: 0, dir: 1,
-        attempts: 0, made: 0,
+        made: 0,
         pointerId: null,
         window: { low: 45, high: 56 }   // 当前轮的绿色窗口（每轮随机）
     };
@@ -124,19 +145,61 @@
         el.style.bottom = "auto";
         el.style.marginLeft = "0";
     }
-    function updateHud() {
-        hudShot.textContent = state.attempts;
-        hudMade.textContent = state.made;
+    function updateAlive() {
         hudAlive.textContent = liveAtoms.length;
+        aliveBox.classList.toggle("zero", liveAtoms.length === 0);
     }
-    var noteTimer = null;
+    /* ============ 顶部结果条：每炮判定实时上屏 ============ */
+    var RESULT = {
+        idle:      { icon: "·", main: "等待开炮", sub: "按住屏幕蓄力，松手开炮", cls: "" },
+        charging:  { icon: "…", main: "蓄力中", sub: "看准绿色\"刚好\"区再松手", cls: "" },
+        light:     { icon: "↓", main: "太轻了", sub: "没跨过库仑势垒，锌核被弹回", cls: "res-light" },
+        hot:       { icon: "↑", main: "用力过猛", sub: "复合核烫炸了，裂成两块", cls: "res-hot" },
+        ok:        { icon: "★", main: "成了！", sub: "278Cn* 正在甩中子降温", cls: "res-ok" }
+    };
+    function setResult(key) {
+        var r = RESULT[key];
+        rIcon.textContent = r.icon;
+        resultText.textContent = r.main;
+        resultSub.textContent = r.sub;
+        resultBar.className = r.cls;
+    }
+    var noteTimer = null, noteAnim = null;
+    // 便签在游戏区上方占位展开：高度+透明度动画，收起时高度收回 0 再隐藏
     function showNote(html, dur) {
         noteText.innerHTML = html;
-        note.classList.add("show");
         clearTimeout(noteTimer);
-        if (dur !== 0) noteTimer = setTimeout(function () { note.classList.remove("show"); }, dur || 4200);
+        var from = note.classList.contains("show") ? note.offsetHeight : 0;
+        if (noteAnim) { noteAnim.cancel(); noteAnim = null; }
+        note.style.display = "block";
+        note.style.height = "auto";
+        var to = note.offsetHeight;
+        note.style.height = from + "px";
+        note.classList.add("show");
+        noteAnim = note.animate([
+            { height: from + "px", opacity: from ? 1 : 0 },
+            { height: to + "px", opacity: 1 }
+        ], { duration: 260, easing: "ease" });
+        noteAnim.onfinish = function () { note.style.height = ""; noteAnim = null; };
+        if (dur !== 0) noteTimer = setTimeout(hideNote, dur || 4200);
     }
-    noteClose.addEventListener("click", function () { note.classList.remove("show"); });
+    function hideNote() {
+        clearTimeout(noteTimer);
+        if (!note.classList.contains("show")) return;
+        var from = note.offsetHeight;
+        if (noteAnim) { noteAnim.cancel(); noteAnim = null; }
+        noteAnim = note.animate([
+            { height: from + "px", opacity: 1 },
+            { height: "0px", opacity: 0 }
+        ], { duration: 220, easing: "ease" });
+        noteAnim.onfinish = function () {
+            note.style.display = "none";
+            note.style.height = "";
+            note.classList.remove("show");
+            noteAnim = null;
+        };
+    }
+    noteClose.addEventListener("click", hideNote);
 
 
     function rollFact() {
@@ -154,7 +217,8 @@
     }
     function updateMeterUI() {
         var v = state.val, w = state.window;
-        meterFill.style.height = v + "%";
+        // 用 transform 驱动而非 height：布局属性零重排，60fps 也不掉
+        meterFill.style.transform = "scaleY(" + (v / 100) + ")";
         meterFill.className = (v >= w.low && v <= w.high) ? "ok" : (v > w.high ? "hot" : "");
     }
     // 每轮随机一个绿色窗口位置，并把能量条上的色带挪过去（玩家看表瞄准）
@@ -184,13 +248,31 @@
     }
     requestAnimationFrame(loop);
 
+    /* ============ 窗口尺寸变化：按比例重排在场原子，避免留在旧坐标被裁掉 ============ */
+    var lastArena = { w: arena.clientWidth, h: arena.clientHeight };
+    window.addEventListener("resize", function () {
+        var w = arena.clientWidth, h = arena.clientHeight;
+        if (!w || !h) return;
+        var kx = w / lastArena.w, ky = h / lastArena.h;
+        if (kx === 1 && ky === 1) return;
+        liveAtoms.forEach(function (a) {
+            a.x = Math.max(24, Math.min(a.x * kx, w - 24));
+            a.y = Math.max(24, Math.min(a.y * ky, h - 24));
+            place(a.el, a.x, a.y);
+        });
+        lastArena = { w: w, h: h };
+    });
+
     /* ============ 交互：按住蓄力，松手开炮 ============ */
     function pointerDown(e) {
         if (state.mode !== "idle") return;
         state.pointerId = e.pointerId;
         state.mode = "charging";
         state.val = 0; state.dir = 1;
+        // 捕获指针：即使拖到浏览器窗口外再松手，照样能收到 pointerup，不会卡在蓄力态
+        try { arena.setPointerCapture(e.pointerId); } catch (err) { /* 老浏览器不支持就算了 */ }
         pickWindow();   // 每轮换个窗口位置，没法背
+        setResult("charging");
         hint.style.opacity = 0;
         beep(330, .06, "triangle");
     }
@@ -198,51 +280,71 @@
         if (state.mode !== "charging" || e.pointerId !== state.pointerId) return;
         fire(state.val);
     }
+    // 充电中被系统打断（来电/拉通知栏/切后台/窗口失焦）：放弃本轮并复位，防止状态机卡死
+    function abortCharge() {
+        if (state.mode !== "charging") return;
+        if (state.pointerId != null) {
+            try { arena.releasePointerCapture(state.pointerId); } catch (err) {}
+            state.pointerId = null;
+        }
+        state.mode = "idle";
+        state.val = 0;
+        updateMeterUI();
+        hint.style.opacity = 1;
+        setResult("idle");
+    }
     arena.addEventListener("pointerdown", pointerDown);
     window.addEventListener("pointerup", pointerUp);
-    window.addEventListener("pointercancel", pointerUp);
+    window.addEventListener("pointercancel", abortCharge);
+    window.addEventListener("blur", abortCharge);
+    document.addEventListener("visibilitychange", function () { if (document.hidden) abortCharge(); });
 
     /* ============ 开炮！ ============ */
     async function fire(power) {
         state.mode = "flying";
-        state.attempts++; updateHud();
         var e = power;
+        try {
+            // 离子从起点冲向铅靶
+            var ionStart = centerOf(ion);
+            var target = centerOf(pb);
+            var dx = target.x - ionStart.x, dy = target.y - ionStart.y;
+            var dur = GAME_DATA.CONFIG.flightBase + (100 - e) * GAME_DATA.CONFIG.flightPerPow;
+            ion.style.transition = "none";
+            ion.style.transform = "translate(0,0) scale(1)";
+            ion.style.opacity = 1;
+            void ion.offsetWidth; // 强制重排，让 transition 生效
+            ion.style.transition = "transform " + dur + "ms cubic-bezier(.3,.6,.4,1), opacity .2s";
+            ion.style.transform = "translate(" + dx + "px," + dy + "px) scale(.85)";
+            beep(200 + e * 4, .12, "square", .05);
+            await sleep(dur);
 
-        // 离子从起点冲向铅靶
-        var ionStart = centerOf(ion);
-        var target = centerOf(pb);
-        var dx = target.x - ionStart.x, dy = target.y - ionStart.y;
-        var dur = GAME_DATA.CONFIG.flightBase + (100 - e) * GAME_DATA.CONFIG.flightPerPow;
-        ion.style.transition = "none";
-        ion.style.transform = "translate(0,0) scale(1)";
-        ion.style.opacity = 1;
-        void ion.offsetWidth; // 强制重排，让 transition 生效
-        ion.style.transition = "transform " + dur + "ms cubic-bezier(.3,.6,.4,1), opacity .2s";
-        ion.style.transform = "translate(" + dx + "px," + dy + "px) scale(.85)";
-        beep(200 + e * 4, .12, "square", .05);
-        await sleep(dur);
-
-        if (e < state.window.low) {
-            await bounce(e);
-        } else if (e > state.window.high) {
-            await shatter(e);
-        } else {
-            await fuse(e);
+            if (e < state.window.low) {
+                await bounce(e);
+            } else if (e > state.window.high) {
+                await shatter(e);
+            } else {
+                await fuse(e);
+            }
+        } finally {
+            // 无论动画链是否中途抛错，都复位状态机和残留视觉，保证下一炮随时能开
+            ion.style.transition = "none";
+            ion.style.transform = "translate(0,0) scale(1)";
+            ion.style.opacity = 1;
+            cnstar.style.display = "none";
+            cnstar.className = "nucleus";
+            fragA.style.display = fragB.style.display = "none";
+            pb.style.opacity = 1;
+            state.mode = "idle";
+            state.val = 0; updateMeterUI();
+            hint.style.opacity = 1;
+            rollFact();
         }
-
-        // 离子归位，等待下一轮
-        ion.style.transition = "none";
-        ion.style.transform = "translate(0,0) scale(1)";
-        ion.style.opacity = 1;
-        state.mode = "idle";
-        state.val = 0; updateMeterUI();
-        hint.style.opacity = 1;
-        rollFact();
     }
 
     /* --- 能量不足：被库仑势垒弹回 --- */
     async function bounce(e) {
         beep(140, .2, "sawtooth", .06);
+        setResult("light");
         var cur = centerOf(ion);
         ion.style.transition = "transform .45s cubic-bezier(.3,.9,.6,1), opacity .45s";
         ion.style.transform = "translate(" + (cur.x * -0.15) + "px," + (arena.clientHeight + 80) + "px) scale(.8)";
@@ -255,6 +357,7 @@
     /* --- 能量过高：复合核散架 --- */
     async function shatter(e) {
         var t = centerOf(pb);
+        setResult("hot");
         // 先合并一瞬
         cnstar.style.display = "flex";
         place(cnstar, t.x, t.y);
@@ -288,6 +391,7 @@
     /* --- 刚刚好：聚变！ --- */
     async function fuse(e) {
         var t = centerOf(pb);
+        setResult("ok");
         pb.style.opacity = 0;
         ion.style.opacity = 0;
         cnstar.style.display = "flex";
@@ -326,7 +430,6 @@
         var sx = t.x + (Math.random() - 0.5) * 90;
         var sy = arena.clientHeight * 0.45 + (Math.random() - 0.5) * 70;
         spawnLiveAtom(sx, sy);
-        updateHud();
         milestones();
 
         cnstar.style.display = "none";
@@ -340,10 +443,10 @@
         var el = document.createElement("div");
         el.className = "live-cn";
         el.innerHTML = "<span>Cn</span><small>277</small><div class=\"ring\"></div>";
+        arena.appendChild(el);   // 必须先入文档，place() 才量得到 offsetWidth，否则按左上角定位会偏移
         place(el, x, y);
-        arena.appendChild(el);
         liveAtoms.push({ x: x, y: y, born: performance.now(), el: el });
-        updateHud();
+        updateAlive();
     }
     function tickAtoms(now) {
         for (var i = liveAtoms.length - 1; i >= 0; i--) {
@@ -355,7 +458,7 @@
                 poof(a.x, a.y);
                 a.el.remove();
                 liveAtoms.splice(i, 1);
-                updateHud();
+                updateAlive();
                 if (Math.random() < 0.5) {
                     showNote("一颗鿔衰变了。现实里 <b>277Cn 只活约 0.4 毫秒</b>，连仪器都得靠\"衰变链\"倒推它的存在。");
                 }
@@ -367,8 +470,8 @@
         for (var i = 0; i < 7; i++) {
             var d = document.createElement("div");
             d.className = "poof-dot";
+            arena.appendChild(d);   // 同 spawnLiveAtom：先入文档再定位
             place(d, x, y);
-            arena.appendChild(d);
             var ang = Math.PI * 2 * i / 7 + Math.random() * 0.5;
             var dist = 24 + Math.random() * 26;
             void d.offsetWidth;
