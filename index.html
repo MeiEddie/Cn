@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>鿔制造机 · 亲手造一颗 112 号元素</title>
+<script src="data.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+    <header>
+        <div class="eq-chip">
+            <sup>208</sup>Pb + <sup>70</sup>Zn → <span class="star"><sup>278</sup>Cn*</span> → <sup>277</sup>Cn + n
+        </div>
+        <div class="title-row">
+            <h1>鿔<em>制造机</em></h1>
+            <span>112 号元素合成小实验</span>
+            <button id="sndBtn">音效</button>
+        </div>
+        <div class="hud">
+            <div class="chip"><b id="hudShot">0</b><i>轰击次数</i></div>
+            <div class="chip"><b id="hudMade">0</b><i>合成鿔原子</i></div>
+            <div class="chip"><b id="hudAlive">0</b><i>还活着</i></div>
+        </div>
+    </header>
+
+    <div id="arena">
+        <div class="nucleus" id="pb">
+            <span class="mass">208</span>
+            <span class="sym">Pb</span>
+            <span class="tag">82 号 · 靶子</span>
+        </div>
+        <div class="nucleus" id="ion">
+            <span class="mass">70</span>
+            <span class="sym">Zn</span>
+        </div>
+        <div class="nucleus" id="cnstar">
+            <span class="mass" id="cnMass">278</span>
+            <span class="sym" id="cnSym">Cn*</span>
+            <span class="tag" id="cnTag">烫！合并成功</span>
+        </div>
+        <div class="neutron" id="neutron"></div>
+        <div class="frag" id="fragA"></div>
+        <div class="frag" id="fragB"></div>
+
+        <div id="meterWrap">
+            <div class="meter-zone" id="zoneLow"><span>太轻</span></div>
+            <div class="meter-zone" id="zoneOk"><span>刚好</span></div>
+            <div class="meter-zone" id="zoneHot"><span>太烫</span></div>
+            <div id="meterFill"></div>
+        </div>
+
+        <div id="note"><span class="close-x" id="noteClose">收起</span><span id="noteText"></span></div>
+        <div id="hint">按住屏幕蓄力，松手开炮</div>
+    </div>
+
+    <div id="fact"><span class="tag">冷知识</span><span id="factText">锌是 30 号，铅是 82 号：30 + 82 = 112，所以科学家拿这两样凑出了 112 号元素。</span></div>
+
+</div>
+
+<script>
+(function () {
+    "use strict";
+
+    /* ============ 配置区：想调手感，改这里就行 ============ */
+
+
+    /* ============ 元素引用 ============ */
+    var $ = function (id) { return document.getElementById(id); };
+    var arena = $("arena"), ion = $("ion"), pb = $("pb"),
+        cnstar = $("cnstar"), neutron = $("neutron"),
+        fragA = $("fragA"), fragB = $("fragB"),
+        meterFill = $("meterFill"), hint = $("hint"),
+        note = $("note"), noteText = $("noteText"), noteClose = $("noteClose"),
+        factText = $("factText"),
+        hudShot = $("hudShot"), hudMade = $("hudMade"), hudAlive = $("hudAlive"),
+        sndBtn = $("sndBtn"),
+        zoneLow = $("zoneLow"), zoneOk = $("zoneOk"), zoneHot = $("zoneHot");
+
+    /* ============ 状态 ============ */
+    var state = {
+        mode: "idle",       // idle | charging | flying | busy
+        val: 0, dir: 1,
+        attempts: 0, made: 0,
+        pointerId: null,
+        window: { low: 45, high: 56 }   // 当前轮的绿色窗口（每轮随机）
+    };
+    var liveAtoms = [];     // 在场的鿔原子 {x, y, born, el}
+
+    /* ============ 音效：网页自带小蜂鸣器，不加载任何文件 ============ */
+    var sndOn = true, actx = null;
+    function beep(freq, dur, type, vol) {
+        if (!sndOn) return;
+        try {
+            if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+            if (actx.state === "suspended") actx.resume();
+            var o = actx.createOscillator(), g = actx.createGain();
+            o.type = type || "sine";
+            o.frequency.value = freq;
+            g.gain.setValueAtTime(vol || 0.08, actx.currentTime);
+            g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + dur);
+            o.connect(g); g.connect(actx.destination);
+            o.start(); o.stop(actx.currentTime + dur);
+        } catch (e) { /* 没有音频就算了 */ }
+    }
+    function chord(list) { list.forEach(function (x, i) { setTimeout(function () { beep(x[0], x[1], x[2], x[3]); }, i * 90); }); }
+    sndBtn.addEventListener("click", function () {
+        sndOn = !sndOn;
+        sndBtn.classList.toggle("off", !sndOn);
+        if (sndOn) beep(660, .1);
+    });
+
+    /* ============ 工具 ============ */
+    function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+    function centerOf(el) {
+        var a = arena.getBoundingClientRect(), r = el.getBoundingClientRect();
+        return { x: r.left - a.left + r.width / 2, y: r.top - a.top + r.height / 2 };
+    }
+    function place(el, x, y) {
+        el.style.left = (x - el.offsetWidth / 2) + "px";
+        el.style.top = (y - el.offsetHeight / 2) + "px";
+        el.style.bottom = "auto";
+        el.style.marginLeft = "0";
+    }
+    function updateHud() {
+        hudShot.textContent = state.attempts;
+        hudMade.textContent = state.made;
+        hudAlive.textContent = liveAtoms.length;
+    }
+    var noteTimer = null;
+    function showNote(html, dur) {
+        noteText.innerHTML = html;
+        note.classList.add("show");
+        clearTimeout(noteTimer);
+        if (dur !== 0) noteTimer = setTimeout(function () { note.classList.remove("show"); }, dur || 4200);
+    }
+    noteClose.addEventListener("click", function () { note.classList.remove("show"); });
+
+
+    function rollFact() {
+        if (Math.random() > GAME_DATA.CONFIG.factChance) return;
+        factText.textContent = GAME_DATA.FACTS[Math.floor(Math.random() * GAME_DATA.FACTS.length)];
+    }
+
+    /* ============ 蓄力条 ============ */
+    function meterTick(dt) {
+        if (state.mode !== "charging") return;
+        state.val += state.dir * GAME_DATA.CONFIG.meterSpeed * dt;
+        if (state.val >= 100) { state.val = 100; state.dir = -1; }
+        if (state.val <= 0)   { state.val = 0;   state.dir = 1; }
+        updateMeterUI();
+    }
+    function updateMeterUI() {
+        var v = state.val, w = state.window;
+        meterFill.style.height = v + "%";
+        meterFill.className = (v >= w.low && v <= w.high) ? "ok" : (v > w.high ? "hot" : "");
+    }
+    // 每轮随机一个绿色窗口位置，并把能量条上的色带挪过去（玩家看表瞄准）
+    function pickWindow() {
+        var center = GAME_DATA.CONFIG.windowCenterMin + Math.random() * (GAME_DATA.CONFIG.windowCenterMax - GAME_DATA.CONFIG.windowCenterMin);
+        var low = center - GAME_DATA.CONFIG.windowSize / 2;
+        var high = center + GAME_DATA.CONFIG.windowSize / 2;
+        state.window = { low: low, high: high };
+        zoneLow.style.bottom = "0%";
+        zoneLow.style.height = low + "%";
+        zoneOk.style.bottom = low + "%";
+        zoneOk.style.height = GAME_DATA.CONFIG.windowSize + "%";
+        zoneHot.style.bottom = high + "%";
+        zoneHot.style.height = (100 - high) + "%";
+        updateMeterUI();
+    }
+    pickWindow();  // 开局先摆一个
+
+    /* ============ 主循环 ============ */
+    var lastT = performance.now();
+    function loop(t) {
+        var dt = Math.min((t - lastT) / 1000, 0.05);
+        lastT = t;
+        meterTick(dt);
+        tickAtoms(t);
+        requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+
+    /* ============ 交互：按住蓄力，松手开炮 ============ */
+    function pointerDown(e) {
+        if (state.mode !== "idle") return;
+        state.pointerId = e.pointerId;
+        state.mode = "charging";
+        state.val = 0; state.dir = 1;
+        pickWindow();   // 每轮换个窗口位置，没法背
+        hint.style.opacity = 0;
+        beep(330, .06, "triangle");
+    }
+    function pointerUp(e) {
+        if (state.mode !== "charging" || e.pointerId !== state.pointerId) return;
+        fire(state.val);
+    }
+    arena.addEventListener("pointerdown", pointerDown);
+    window.addEventListener("pointerup", pointerUp);
+    window.addEventListener("pointercancel", pointerUp);
+
+    /* ============ 开炮！ ============ */
+    async function fire(power) {
+        state.mode = "flying";
+        state.attempts++; updateHud();
+        var e = power;
+
+        // 离子从起点冲向铅靶
+        var ionStart = centerOf(ion);
+        var target = centerOf(pb);
+        var dx = target.x - ionStart.x, dy = target.y - ionStart.y;
+        var dur = GAME_DATA.CONFIG.flightBase + (100 - e) * GAME_DATA.CONFIG.flightPerPow;
+        ion.style.transition = "none";
+        ion.style.transform = "translate(0,0) scale(1)";
+        ion.style.opacity = 1;
+        void ion.offsetWidth; // 强制重排，让 transition 生效
+        ion.style.transition = "transform " + dur + "ms cubic-bezier(.3,.6,.4,1), opacity .2s";
+        ion.style.transform = "translate(" + dx + "px," + dy + "px) scale(.85)";
+        beep(200 + e * 4, .12, "square", .05);
+        await sleep(dur);
+
+        if (e < state.window.low) {
+            await bounce(e);
+        } else if (e > state.window.high) {
+            await shatter(e);
+        } else {
+            await fuse(e);
+        }
+
+        // 离子归位，等待下一轮
+        ion.style.transition = "none";
+        ion.style.transform = "translate(0,0) scale(1)";
+        ion.style.opacity = 1;
+        state.mode = "idle";
+        state.val = 0; updateMeterUI();
+        hint.style.opacity = 1;
+        rollFact();
+    }
+
+    /* --- 能量不足：被库仑势垒弹回 --- */
+    async function bounce(e) {
+        beep(140, .2, "sawtooth", .06);
+        var cur = centerOf(ion);
+        ion.style.transition = "transform .45s cubic-bezier(.3,.9,.6,1), opacity .45s";
+        ion.style.transform = "translate(" + (cur.x * -0.15) + "px," + (arena.clientHeight + 80) + "px) scale(.8)";
+        ion.style.opacity = 0;
+        spawnFloatTag(cur.x, cur.y + 40, "咚！被弹回来了");
+        showNote("<b>撞不进去。</b>原子核都带正电，铅核会把锌核往外推——这道墙叫<b>库仑势垒</b>。能量不够，就是挤不进门。蓄力条进<b>绿色\"刚好\"区</b>再松手，每轮绿区位置都不一样，得看表。");
+        await sleep(500);
+    }
+
+    /* --- 能量过高：复合核散架 --- */
+    async function shatter(e) {
+        var t = centerOf(pb);
+        // 先合并一瞬
+        cnstar.style.display = "flex";
+        place(cnstar, t.x, t.y);
+        cnstar.className = "nucleus hot";
+        beep(90, .3, "sawtooth", .07);
+        await sleep(550);
+        // 碎裂：两块碎片飞出
+        cnstar.style.display = "none";
+        cnstar.className = "nucleus";
+        var sizes = [34, 26];
+        [fragA, fragB].forEach(function (f, i) {
+            f.style.display = "block";
+            f.style.width = f.style.height = sizes[i] + "px";
+            f.style.background = i ? "var(--green)" : "var(--yellow)";
+            place(f, t.x, t.y);
+            f.style.transition = "none";
+            var ang = (i ? 1 : -1) * (0.6 + Math.random() * 0.5);
+            var dist = 130 + Math.random() * 90;
+            void f.offsetWidth;
+            f.style.transition = "transform .6s ease-out, opacity .6s";
+            f.style.transform = "translate(" + Math.sin(ang) * dist + "px," + (-Math.cos(ang) * dist) + "px) rotate(" + (i ? 200 : -160) + "deg)";
+            f.style.opacity = 0;
+        });
+        beep(70, .25, "square", .07);
+        spawnFloatTag(t.x, t.y + 60, "咔嚓——散架了");
+        showNote("<b>用力过猛。</b>合并出的复合核本来就不稳，能量再一高它就\"烫炸\"了，直接裂回小块。所以合成 superheavy 元素是门手艺：要快，但不能蛮。");
+        await sleep(650);
+        fragA.style.display = fragB.style.display = "none";
+    }
+
+    /* --- 刚刚好：聚变！ --- */
+    async function fuse(e) {
+        var t = centerOf(pb);
+        pb.style.opacity = 0;
+        ion.style.opacity = 0;
+        cnstar.style.display = "flex";
+        place(cnstar, t.x, t.y);
+        cnstar.className = "nucleus hot";
+        $("cnMass").textContent = "278";
+        $("cnSym").textContent = "Cn*";
+        $("cnTag").textContent = "烫！合并成功";
+        chord([[523, .1], [659, .1], [784, .12]]);
+        spawnFloatTag(t.x - 120, t.y - 20, "锌 + 铅 → 278Cn*");
+        await sleep(1300);   // 复合核抖动“降温”
+
+        // 蒸发一个中子带走能量
+        var n = centerOf(cnstar);
+        neutron.style.display = "block";
+        place(neutron, n.x, n.y);
+        neutron.style.transition = "none";
+        void neutron.offsetWidth;
+        neutron.style.transition = "transform .8s ease-out, opacity .8s";
+        neutron.style.transform = "translate(" + (arena.clientWidth * 0.32) + "px," + (-arena.clientHeight * 0.28) + "px) scale(.6)";
+        neutron.style.opacity = 0;
+        beep(880, .1, "sine", .06);
+        spawnFloatTag(n.x + 40, n.y - 34, "蒸发 1 个中子");
+        await sleep(500);
+
+        // 变成 277Cn，安分下来
+        $("cnMass").textContent = "277";
+        $("cnSym").textContent = "Cn";
+        $("cnTag").textContent = "112 号，诞生";
+        cnstar.className = "nucleus calm";
+        chord([[784, .12], [1046, .18]]);
+        await sleep(900);
+
+        // 登记一颗在场的鿔原子
+        state.made++;
+        var sx = t.x + (Math.random() - 0.5) * 90;
+        var sy = arena.clientHeight * 0.45 + (Math.random() - 0.5) * 70;
+        spawnLiveAtom(sx, sy);
+        updateHud();
+        milestones();
+
+        cnstar.style.display = "none";
+        cnstar.className = "nucleus";
+        pb.style.opacity = 1;
+        showNote("<b>成了！</b>278Cn* 甩出一个中子给自己降温，剩下的就是 <b>277Cn</b>——你亲手合成的 112 号元素。1996 年 GSI 团队用的正是这一招。", 5200);
+    }
+
+    /* ============ 在场的鿔原子：短暂地活一会儿，然后衰变 ============ */
+    function spawnLiveAtom(x, y) {
+        var el = document.createElement("div");
+        el.className = "live-cn";
+        el.innerHTML = "<span>Cn</span><small>277</small><div class=\"ring\"></div>";
+        place(el, x, y);
+        arena.appendChild(el);
+        liveAtoms.push({ x: x, y: y, born: performance.now(), el: el });
+        updateHud();
+    }
+    function tickAtoms(now) {
+        for (var i = liveAtoms.length - 1; i >= 0; i--) {
+            var a = liveAtoms[i];
+            var age = now - a.born;
+            var k = age / GAME_DATA.CONFIG.cnLife;
+            a.el.style.opacity = k > 0.7 ? String(1 - (k - 0.7) / 0.3) : "1";
+            if (age >= GAME_DATA.CONFIG.cnLife) {
+                poof(a.x, a.y);
+                a.el.remove();
+                liveAtoms.splice(i, 1);
+                updateHud();
+                if (Math.random() < 0.5) {
+                    showNote("一颗鿔衰变了。现实里 <b>277Cn 只活约 0.4 毫秒</b>，连仪器都得靠\"衰变链\"倒推它的存在。");
+                }
+            }
+        }
+    }
+    function poof(x, y) {
+        beep(220, .18, "triangle", .05);
+        for (var i = 0; i < 7; i++) {
+            var d = document.createElement("div");
+            d.className = "poof-dot";
+            place(d, x, y);
+            arena.appendChild(d);
+            var ang = Math.PI * 2 * i / 7 + Math.random() * 0.5;
+            var dist = 24 + Math.random() * 26;
+            void d.offsetWidth;
+            d.style.transition = "transform .5s ease-out, opacity .5s";
+            d.style.transform = "translate(" + Math.cos(ang) * dist + "px," + Math.sin(ang) * dist + "px) scale(.3)";
+            d.style.opacity = 0;
+            (function (dd) { setTimeout(function () { dd.remove(); }, 550); })(d);
+        }
+    }
+
+    /* ============ 飘字 ============ */
+    function spawnFloatTag(x, y, text) {
+        var el = document.createElement("div");
+        el.className = "float-tag";
+        el.textContent = text;
+        el.style.left = Math.max(6, Math.min(x - 60, arena.clientWidth - 130)) + "px";
+        el.style.top = Math.max(6, y) + "px";
+        arena.appendChild(el);
+        setTimeout(function () {
+            el.style.transition = "opacity .5s, transform .5s";
+            el.style.opacity = 0;
+            el.style.transform = "translateY(-16px)";
+        }, 900);
+        setTimeout(function () { el.remove(); }, 1500);
+    }
+
+    /* ============ 里程碑 ============ */
+    function milestones() {
+        var msgs = GAME_DATA.MILESTONES;
+        if (msgs[state.made]) setTimeout(function () { showNote("<b>" + msgs[state.made] + "</b>", 5200); }, 1400);
+    }
+})();
+</script>
+</body>
+</html>
